@@ -1,85 +1,110 @@
 #include <Arduino.h>
 #include <M5Unified.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
 #include <Wire.h>
 #include "MFRC522_I2C.h"
 
-// I2Cアドレス (Unit RFIDなどは通常0x28)
+//========== 前方宣言(Forward Declaration) ==========//
+void sendNfcData(String nfcData);
+void printBoth(const String &message);
+
+//========== Wi-Fi設定 ==========//
+const char* ssid      = "SSID-IPhone";
+const char* password  = "kvd4m7zz1bw0";
+const char* serverUrl = "https://firebase-demo-alpha.vercel.app/api/IoT/NFC";
+
+//========== RFID設定 (I2C接続) ==========//
+// I2Cアドレス (Unit RFIDの場合、通常は 0x28)
 MFRC522 mfrc522(0x28);
 
-// 読み取る開始ページ (NTAG215の場合, NDEFが入っているなら 4 付近)
-#define NTAG_PAGE 4
-
 void setup() {
+  // ----- M5 Unified初期化 -----
   auto cfg = M5.config();
   M5.begin(cfg);
 
+  // シリアルモニタ開始
+  Serial.begin(115200);
+
+  // 画面表示設定
   M5.Lcd.setTextSize(2);
-  M5.Lcd.println("NTAG215 Reader (Type2)");
+  M5.Lcd.println("Booting...");
 
-  Wire.begin();      // I2C 初期化
-  mfrc522.PCD_Init(); // RC522 初期化
+  // ----- I2C・RFID初期化 -----
+  Wire.begin();
+  mfrc522.PCD_Init();   // RC522 初期化
 
-  M5.Lcd.println("Please put NTAG215 card...");
+  // ----- Wi-Fi(ESP32)接続 -----
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  printBoth("WiFi Connecting");
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    M5.Lcd.print(".");
+    delay(1000);
+  }
+  printBoth("\nConnected to WiFi");
 }
 
 void loop() {
-  M5.update();
+  M5.update();  // M5Unifiedでボタンなどの状態を更新
 
-  // 新しいカード検出
+  // 新しいカードがあるか確認
   if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) {
-    delay(200);
+    delay(50);
     return;
   }
 
-  M5.Lcd.println("\n--- Card Detected ---");
+  // ----- UID取得 -----
+  char buf[9];  // UIDを格納するバッファ（8桁の16進数 + 終端）
+  sprintf(buf, "%02X%02X%02X%02X",
+          mfrc522.uid.uidByte[0], 
+          mfrc522.uid.uidByte[1],
+          mfrc522.uid.uidByte[2],
+          mfrc522.uid.uidByte[3]);
+  String uid = String(buf);
 
-  // UID表示
-  M5.Lcd.print("UID: ");
-  for (byte i = 0; i < mfrc522.uid.size; i++) {
-    if (mfrc522.uid.uidByte[i] < 0x10) M5.Lcd.print("0");
-    M5.Lcd.print(mfrc522.uid.uidByte[i], HEX);
-    M5.Lcd.print(" ");
-  }
-  M5.Lcd.println("");
+  printBoth("NFC UID: " + uid);
 
-  // ▼ Type2 (NTAG21x) のREADコマンド(0x30)を送る
-  byte cmdBuffer[2];
-  cmdBuffer[0] = 0x30;      // READコマンド
-  cmdBuffer[1] = NTAG_PAGE; // 読み取りたいページ番号(4バイト単位)
+  // ----- 取得UIDをAPIへ送信 -----
+  sendNfcData(uid);
 
-  byte readData[18];        // 受信バッファ(16バイト + CRC等)
-  byte readLen = sizeof(readData);
-
-  // 戻り値はbyte (enumの STATUS_OK=0 等)
-  byte result = mfrc522.PCD_TransceiveData(
-      cmdBuffer, 
-      2,
-      readData, 
-      &readLen, 
-      nullptr, 
-      0, 
-      false
-  );
-
-  if (result != MFRC522::STATUS_OK) {
-    M5.Lcd.println("Read failed");
-    // 詳細メッセージ
-    M5.Lcd.println(mfrc522.GetStatusCodeName(result));
-    mfrc522.PICC_HaltA();
-    return;
-  }
-
-  // 読み出されたデータ(16バイト)をASCIIとして解釈
-  String textData;
-  for (byte i = 0; i < 16; i++) {
-    textData += (char)readData[i];
-  }
-
-  M5.Lcd.println("Page4-7 Data:");
-  M5.Lcd.println(textData);
-
-  // カード停止
+  // ----- 次の読み取りに備えカードを停止 -----
   mfrc522.PICC_HaltA();
+  mfrc522.PCD_StopCrypto1();
 
-  delay(3000);
+  delay(3000);  // 読み取り間隔の調整
+}
+
+//========== HTTP POSTでNFCデータを送信する関数 ==========//
+void sendNfcData(String nfcData) {
+  if (WiFi.status() != WL_CONNECTED) {
+    printBoth("WiFi not connected.");
+    return;
+  }
+
+  HTTPClient http;
+  http.begin(serverUrl);
+  http.addHeader("Content-Type", "application/json");
+
+  // JSON形式でUIDを送信
+  String jsonPayload = "{\"nfc_uid\": \"" + nfcData + "\"}";
+  int httpResponseCode = http.POST(jsonPayload);
+
+  if (httpResponseCode > 0) {
+    String response = http.getString();
+    printBoth("HTTP Response: " + String(httpResponseCode));
+    printBoth("Response: " + response);
+  } else {
+    printBoth("Error on HTTP request");
+  }
+
+  http.end();
+}
+
+//========== シリアルとLCDに同時に出力する関数 ==========//
+void printBoth(const String &message) {
+  Serial.println(message);
+  M5.Lcd.println(message);
 }
