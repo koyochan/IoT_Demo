@@ -4,37 +4,31 @@
 #include <HTTPClient.h>
 #include <Wire.h>
 #include "MFRC522_I2C.h"
+#include "secrets.h"
 
 //========== 前方宣言(Forward Declaration) ==========//
-void sendNfcData(String nfcData);
+void sendNfcData(String nfcData, String deviceId);
 void printBoth(const String &message);
+String getDeviceId();
 
 //========== Wi-Fi設定 ==========//
-const char* ssid      = "SSID-IPhone";
-const char* password  = "kvd4m7zz1bw0";
 const char* serverUrl = "https://firebase-demo-alpha.vercel.app/api/IoT/NFC";
-
+const char* ssid = WIFI_SSID; 
+const char* password = WIFI_PASSWORD;
 //========== RFID設定 (I2C接続) ==========//
-// I2Cアドレス (Unit RFIDの場合、通常は 0x28)
 MFRC522 mfrc522(0x28);
 
 void setup() {
-  // ----- M5 Unified初期化 -----
   auto cfg = M5.config();
   M5.begin(cfg);
 
-  // シリアルモニタ開始
   Serial.begin(115200);
-
-  // 画面表示設定
   M5.Lcd.setTextSize(2);
   M5.Lcd.println("Booting...");
 
-  // ----- I2C・RFID初期化 -----
   Wire.begin();
-  mfrc522.PCD_Init();   // RC522 初期化
+  mfrc522.PCD_Init();
 
-  // ----- Wi-Fi(ESP32)接続 -----
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
 
@@ -48,16 +42,15 @@ void setup() {
 }
 
 void loop() {
-  M5.update();  // M5Unifiedでボタンなどの状態を更新
+  M5.update();
 
-  // 新しいカードがあるか確認
   if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) {
     delay(50);
     return;
   }
 
-  // ----- UID取得 -----
-  char buf[9];  // UIDを格納するバッファ（8桁の16進数 + 終端）
+  // NFC UIDを取得
+  char buf[9];
   sprintf(buf, "%02X%02X%02X%02X",
           mfrc522.uid.uidByte[0], 
           mfrc522.uid.uidByte[1],
@@ -67,18 +60,29 @@ void loop() {
 
   printBoth("NFC UID: " + uid);
 
-  // ----- 取得UIDをAPIへ送信 -----
-  sendNfcData(uid);
+  // デバイスID取得
+  String deviceId = getDeviceId();
+  printBoth("Device ID: " + deviceId);
 
-  // ----- 次の読み取りに備えカードを停止 -----
+  // NFC UID をAPIへ送信（デバイスIDはヘッダーに追加）
+  sendNfcData(uid, deviceId);
+
   mfrc522.PICC_HaltA();
   mfrc522.PCD_StopCrypto1();
 
-  delay(3000);  // 読み取り間隔の調整
+  delay(3000);
+}
+
+//========== ESP32のユニークなデバイスIDを取得 ==========//
+String getDeviceId() {
+  uint64_t chipId = ESP.getEfuseMac();
+  char idBuf[13]; // 12桁の16進数 + 終端文字
+  sprintf(idBuf, "%04X%08X", (uint16_t)(chipId >> 32), (uint32_t)chipId);
+  return String(idBuf);
 }
 
 //========== HTTP POSTでNFCデータを送信する関数 ==========//
-void sendNfcData(String nfcData) {
+void sendNfcData(String nfcData, String deviceId) {
   if (WiFi.status() != WL_CONNECTED) {
     printBoth("WiFi not connected.");
     return;
@@ -87,17 +91,32 @@ void sendNfcData(String nfcData) {
   HTTPClient http;
   http.begin(serverUrl);
   http.addHeader("Content-Type", "application/json");
+  http.addHeader("IoT-Device-ID", deviceId);  // デバイスIDをヘッダーに追加
 
-  // JSON形式でUIDを送信
+  // JSONデータ
   String jsonPayload = "{\"nfc_uid\": \"" + nfcData + "\"}";
+
+  //====== リクエスト内容を Serial Monitor に表示 ======//
+  Serial.println("===== HTTP Request =====");
+  Serial.println("POST " + String(serverUrl));
+  Serial.println("IoT-Device-ID: " + deviceId);
+  Serial.println("Content-Type: application/json");
+  Serial.println("Body: " + jsonPayload);
+  Serial.println("========================");
+
   int httpResponseCode = http.POST(jsonPayload);
 
+  //====== レスポンスを M5.LCD に表示 ======//
+  M5.Lcd.fillScreen(BLACK);  // 画面クリア
+  M5.Lcd.setCursor(0, 0);
+  M5.Lcd.setTextSize(2);
+  
   if (httpResponseCode > 0) {
     String response = http.getString();
-    printBoth("HTTP Response: " + String(httpResponseCode));
-    printBoth("Response: " + response);
+    M5.Lcd.println("Response:");
+    M5.Lcd.println(response);
   } else {
-    printBoth("Error on HTTP request");
+    M5.Lcd.println("HTTP Error");
   }
 
   http.end();
