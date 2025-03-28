@@ -12,7 +12,7 @@ void printBoth(const String &message);
 String getDeviceId();
 
 //========== Wi-Fi設定 ==========//
-const char* serverUrl = "https://firebase-demo-alpha.vercel.app/api/IoT/NFC";
+const char* serverUrl = "https://pcn.10xer.education/api/access/touch";
 const char* ssid = WIFI_SSID; 
 const char* password = WIFI_PASSWORD;
 //========== RFID設定 (I2C接続) ==========//
@@ -39,6 +39,7 @@ void setup() {
     delay(1000);
   }
   printBoth("\nConnected to WiFi");
+  printBoth("put your card ...");
 }
 
 void loop() {
@@ -94,7 +95,7 @@ void sendNfcData(String nfcData, String deviceId) {
   http.addHeader("IoT-Device-ID", deviceId);  // デバイスIDをヘッダーに追加
 
   // JSONデータ
-  String jsonPayload = "{\"nfc_uid\": \"" + nfcData + "\"}";
+  String jsonPayload = "{\"uuid\": \"" + nfcData + "\"}";
 
   //====== リクエスト内容を Serial Monitor に表示 ======//
   Serial.println("===== HTTP Request =====");
